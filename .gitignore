@@ -1,0 +1,40 @@
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+local-print-server/bin/
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+
+# Go workspace file
+go.work
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Dependencies (will be downloaded via go mod)
+vendor/
+
+# Local config with secrets
+config.yaml
+!configs/config.example.yaml
+
+# Cloned repositories (can be re-cloned)
+escpos-netprinter/
+escpos-emulator/
+
+# Logs
+*.log

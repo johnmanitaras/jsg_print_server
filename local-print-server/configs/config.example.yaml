@@ -1,0 +1,24 @@
+server:
+  port: 8080
+  host: "0.0.0.0"
+
+cloud:
+  endpoint: "https://api.jetsetgo.world/api/v1/print"
+  server_id: ""      # Will be assigned during registration
+  api_key: ""        # Will be assigned during registration
+  poll_interval: 2s
+
+printers:
+  # Example USB printer (Epson TM-T20)
+  # - id: "receipt-1"
+  #   name: "Front Desk Receipt Printer"
+  #   type: "usb"
+  #   vendor_id: "0x04b8"
+  #   product_id: "0x0202"
+
+  # Example network printer
+  # - id: "kitchen-1"
+  #   name: "Kitchen Ticket Printer"
+  #   type: "network"
+  #   address: "192.168.1.100"
+  #   port: 9100
