@@ -45,26 +45,48 @@ The cloud server handles all complex processing (ESC/POS command generation, for
 │  │  Web Apps        │      │  • Receives print requests (JSON)        │    │
 │  └──────────────────┘      │  • Generates ESC/POS byte stream         │    │
 │                            │  • Handles images, barcodes, QR codes    │    │
-│                            │  • Queues jobs per tenant/location       │    │
+│                            │  • Pushes jobs via WebSocket             │    │
 │                            │  • Manages printer registrations         │    │
 │                            └─────────────────┬────────────────────────┘    │
 └──────────────────────────────────────────────┼─────────────────────────────┘
-                                               │ HTTPS (poll or webhook)
+                                               │
+                              ┌────────────────┴────────────────┐
+                              │  WebSocket (primary, ~50ms)     │
+                              │  HTTP Polling (fallback, 30s)   │
+                              └────────────────┬────────────────┘
                                                ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                           CUSTOMER SITE (Local Network)                     │
 │  ┌──────────────────────────────────────────┐      ┌───────────────────┐   │
 │  │  Local Print Server (Go)                 │      │  Thermal Printer  │   │
-│  │  • Polls cloud for pending jobs          │─────►│  (USB or Network) │   │
-│  │  • Receives ESC/POS bytes                │      └───────────────────┘   │
+│  │  • WebSocket connection to cloud         │─────►│  (USB or Network) │   │
+│  │  • Receives ESC/POS bytes instantly      │      └───────────────────┘   │
 │  │  • Forwards to printer                   │                              │
 │  │  • Reports status back to cloud          │      ┌───────────────────┐   │
-│  │  • Simple web UI for setup               │─────►│  Thermal Printer  │   │
+│  │  • Falls back to polling if WS fails     │─────►│  Thermal Printer  │   │
 │  └──────────────────────────────────────────┘      │  (Additional)     │   │
 │                                                    └───────────────────┘   │
 │  Hardware: Raspberry Pi Zero 2 W ($15) or any PC                           │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
+
+### 3.1 Communication Strategy
+
+| Method | Latency | Use Case |
+|--------|---------|----------|
+| **WebSocket (Primary)** | ~50ms | Real-time job delivery |
+| **HTTP Polling (Fallback)** | 0-30s | When WebSocket unavailable |
+
+**Why WebSocket?**
+- Local server initiates connection (firewall-friendly)
+- Cloud pushes jobs instantly over persistent connection
+- No polling overhead when idle
+- Automatic reconnection with exponential backoff
+
+**Why keep polling fallback?**
+- Some corporate firewalls block WebSocket
+- Simpler debugging during development
+- Graceful degradation
 
 ---
 
@@ -96,20 +118,57 @@ GET /api/v1/print/jobs/{job_id}
   - Get job status
   - Returns: status, error details if failed
 
+WS /api/v1/print/servers/{server_id}/ws
+  - WebSocket endpoint for real-time job delivery (PRIMARY)
+  - Auth: API key in connection header or query param
+  - Server pushes: { type: "job", job_id, printer_id, data: "<base64 ESC/POS>" }
+  - Client sends: { type: "status", job_id, status: "completed|failed", error? }
+  - Client sends: { type: "ping" } to keep alive
+
 GET /api/v1/print/servers/{server_id}/jobs
-  - Get pending jobs for a local print server (polling endpoint)
+  - Get pending jobs for a local print server (FALLBACK polling endpoint)
   - Returns: array of jobs with ESC/POS bytes (base64)
 
 POST /api/v1/print/servers/{server_id}/jobs/{job_id}/status
-  - Local server reports job completion/failure
+  - Local server reports job completion/failure (FALLBACK for non-WS)
   - Body: { status: "completed" | "failed", error?: string }
 
 POST /api/v1/print/servers/register
   - Register a new local print server
-  - Returns: server_id, api_key
+  - Returns: server_id, api_key, ws_endpoint
 
 GET /api/v1/print/servers/{server_id}/printers
   - List printers configured on local server
+```
+
+**WebSocket Message Types:**
+
+```json
+// Cloud → Local: New print job
+{
+  "type": "job",
+  "job_id": "job_abc123",
+  "printer_id": "receipt-1",
+  "data": "<base64-encoded ESC/POS bytes>"
+}
+
+// Local → Cloud: Job status update
+{
+  "type": "status",
+  "job_id": "job_abc123",
+  "status": "completed",  // or "failed"
+  "error": null           // error message if failed
+}
+
+// Local → Cloud: Heartbeat
+{
+  "type": "ping"
+}
+
+// Cloud → Local: Heartbeat response
+{
+  "type": "pong"
+}
 ```
 
 **Print Job Request Format (JSON):**
@@ -153,7 +212,8 @@ GET /api/v1/print/servers/{server_id}/printers
 
 | Feature | Description |
 |---------|-------------|
-| Cloud Polling | Poll cloud server for pending print jobs |
+| **WebSocket Connection** | Persistent connection to cloud for instant job delivery |
+| Polling Fallback | Fall back to HTTP polling if WebSocket unavailable |
 | Print Forwarding | Send ESC/POS bytes to configured printers |
 | USB Support | Connect to USB thermal printers |
 | Network Support | Connect to network printers (TCP port 9100) |
@@ -161,6 +221,7 @@ GET /api/v1/print/servers/{server_id}/printers
 | Web UI | Simple configuration interface |
 | Auto-discovery | Detect available printers |
 | Resilience | Queue jobs locally if cloud unreachable |
+| **Auto-Reconnect** | Reconnect WebSocket with exponential backoff |
 
 **Local Server Does NOT:**
 - Generate ESC/POS commands
@@ -176,9 +237,18 @@ server:
 
 cloud:
   endpoint: "https://api.jetsetgo.world/api/v1/print"
+  ws_endpoint: "wss://api.jetsetgo.world/api/v1/print/servers/{server_id}/ws"
   server_id: "srv_abc123"
   api_key: "key_xyz789"
-  poll_interval: 2s
+
+  # WebSocket settings
+  use_websocket: true           # Primary transport
+  ws_reconnect_delay: 1s        # Initial reconnect delay
+  ws_max_reconnect_delay: 30s   # Max reconnect delay (exponential backoff)
+  ws_ping_interval: 30s         # Heartbeat interval
+
+  # Polling fallback settings
+  poll_interval: 30s            # Only used if WebSocket fails
 
 printers:
   - id: "receipt-1"
@@ -279,18 +349,22 @@ ESC/POS compatible thermal receipt printers:
 - Local server authenticates to cloud using API key
 - API key issued during server registration
 - Keys can be revoked from cloud admin panel
+- WebSocket connections authenticate via API key in header or query param
 
 ### 7.2 Communication
 
-- All cloud communication over HTTPS
+- All cloud communication over HTTPS/WSS (TLS encrypted)
+- WebSocket uses WSS (WebSocket Secure) only
 - Local server validates cloud SSL certificate
-- No inbound connections required at customer site (polling model)
+- No inbound connections required at customer site
 
 ### 7.3 Network Considerations
 
 - Local server initiates all connections (firewall-friendly)
+- WebSocket is outbound connection from customer site
 - No port forwarding required at customer site
-- Works behind NAT
+- Works behind NAT and most corporate firewalls
+- Fallback to HTTPS polling if WebSocket blocked
 
 ---
 
@@ -379,15 +453,24 @@ Integration into existing JetSetGo admin:
 
 **Goal:** Full cloud-to-local pipeline
 
+**Cloud (FastAPI):**
 - [ ] Cloud print job API endpoints
-- [ ] ESC/POS generation library
+- [ ] ESC/POS generation library (python-escpos or custom)
 - [ ] Image dithering for thermal printers
 - [ ] Barcode/QR code generation
-- [ ] Local server polling mechanism
+- [ ] **WebSocket endpoint for real-time job push**
+- [ ] HTTP polling endpoint (fallback)
 - [ ] Job status tracking
 - [ ] Server registration flow
 
-**Deliverable:** End-to-end printing from JetSetGo app
+**Local (Go):**
+- [ ] **WebSocket client with auto-reconnect**
+- [ ] Exponential backoff for reconnection
+- [ ] Heartbeat/ping-pong handling
+- [ ] HTTP polling fallback
+- [ ] Job status reporting via WebSocket
+
+**Deliverable:** End-to-end printing from JetSetGo app with <100ms latency
 
 ### Phase 3: Production Hardening
 
@@ -432,7 +515,8 @@ Test matrix:
 
 | Metric | Target |
 |--------|--------|
-| Print latency (cloud to paper) | < 3 seconds |
+| Print latency (cloud to paper) | **< 500ms** (WebSocket), < 3s (polling fallback) |
+| WebSocket connection uptime | > 99% |
 | Print success rate | > 99.5% |
 | Local server uptime | > 99.9% |
 | Setup time (customer) | < 15 minutes |
@@ -443,8 +527,9 @@ Test matrix:
 
 ## 13. Open Questions
 
-1. **WebSocket vs Polling** - Should local server use WebSocket for real-time jobs, or is polling sufficient?
-   - Recommendation: Start with polling (simpler), add WebSocket later if latency is an issue
+1. ~~**WebSocket vs Polling**~~ - **RESOLVED**
+   - **Decision:** WebSocket as primary transport, HTTP polling as fallback
+   - **Rationale:** Sub-100ms latency with WebSocket, graceful fallback for restrictive networks
 
 2. **Multiple Tenants** - Can one local server serve multiple JetSetGo tenants?
    - Recommendation: Yes, server registers with tenant, routes jobs by printer ID
@@ -504,7 +589,8 @@ local-print-server/
 │   │   └── routes.go         # Route definitions
 │   ├── cloud/
 │   │   ├── client.go         # Cloud API client
-│   │   └── polling.go        # Job polling logic
+│   │   ├── websocket.go      # WebSocket connection manager (PRIMARY)
+│   │   └── polling.go        # Job polling logic (FALLBACK)
 │   ├── printer/
 │   │   ├── printer.go        # Printer interface
 │   │   ├── usb.go            # USB printer implementation
