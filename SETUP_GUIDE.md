@@ -378,6 +378,22 @@ docker logs escpos-emulator
 2. Click "Open printed receipt list"
 3. Click on a receipt to view rendered output
 
+### Fix Emulator Font for Accurate Preview
+
+The default emulator uses a generic monospace font that can cause visual misalignment. To fix this:
+
+```bash
+# Copy the fixed CSS to the container
+docker cp "api/ticketing/esc2html_fixed.css" escpos-emulator:/home/escpos-emu/src/resources/esc2html.css
+```
+
+The fixed CSS uses `Consolas` font at a calibrated size, ensuring:
+- All 48 characters fit exactly in the 80mm receipt width
+- Dividers, text, and columns align perfectly
+- Preview matches actual thermal printer output
+
+**Note:** This fix persists until the container is removed. Re-apply after `docker rm escpos-emulator`.
+
 ### Test Workflow
 
 ```bash
