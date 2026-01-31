@@ -4,9 +4,18 @@ server:
 
 cloud:
   endpoint: "https://api.jetsetgo.world/api/v1/print"
+  ws_endpoint: "wss://api.jetsetgo.world/api/v1/print/ws"
   server_id: ""      # Will be assigned during registration
   api_key: ""        # Will be assigned during registration
-  poll_interval: 2s
+
+  # WebSocket settings (primary transport)
+  use_websocket: true
+  ws_reconnect_delay: 1s        # Initial reconnect delay
+  ws_max_reconnect_delay: 30s   # Max reconnect delay (exponential backoff)
+  ws_ping_interval: 30s         # Heartbeat interval
+
+  # Polling fallback (used if WebSocket unavailable)
+  poll_interval: 30s
 
 printers:
   # Example USB printer (Epson TM-T20)
@@ -22,3 +31,10 @@ printers:
   #   type: "network"
   #   address: "192.168.1.100"
   #   port: 9100
+
+  # ESC/POS emulator (for testing)
+  - id: "emulator-1"
+    name: "ESC/POS Emulator"
+    type: "network"
+    address: "127.0.0.1"
+    port: 9100

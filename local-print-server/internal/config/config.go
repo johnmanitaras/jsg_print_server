@@ -26,6 +26,13 @@ type CloudConfig struct {
 	ServerID     string        `yaml:"server_id"`
 	APIKey       string        `yaml:"api_key"`
 	PollInterval time.Duration `yaml:"poll_interval"`
+
+	// WebSocket settings
+	UseWebSocket      bool          `yaml:"use_websocket"`
+	WSEndpoint        string        `yaml:"ws_endpoint"`
+	WSReconnectDelay  time.Duration `yaml:"ws_reconnect_delay"`
+	WSMaxReconnect    time.Duration `yaml:"ws_max_reconnect_delay"`
+	WSPingInterval    time.Duration `yaml:"ws_ping_interval"`
 }
 
 // PrinterConfig represents a printer configuration
@@ -47,8 +54,13 @@ func Default() *Config {
 			Host: "0.0.0.0",
 		},
 		Cloud: CloudConfig{
-			Endpoint:     "https://api.jetsetgo.world/api/v1/print",
-			PollInterval: 2 * time.Second,
+			Endpoint:          "https://api.jetsetgo.world/api/v1/print",
+			WSEndpoint:        "wss://api.jetsetgo.world/api/v1/print/ws",
+			UseWebSocket:      true,
+			WSReconnectDelay:  1 * time.Second,
+			WSMaxReconnect:    30 * time.Second,
+			WSPingInterval:    30 * time.Second,
+			PollInterval:      30 * time.Second, // Fallback polling interval
 		},
 		Printers: []PrinterConfig{},
 	}

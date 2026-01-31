@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 
+	"github.com/jetsetgo/local-print-server/internal/cloud"
 	"github.com/jetsetgo/local-print-server/internal/config"
 	"github.com/jetsetgo/local-print-server/internal/printer"
 )
@@ -13,14 +14,17 @@ import (
 type Server struct {
 	config         *config.Config
 	printerManager *printer.Manager
+	wsClient       *cloud.WSClient
 	mux            *http.ServeMux
 }
 
 // NewServer creates a new HTTP server
 func NewServer(cfg *config.Config) *Server {
+	printerMgr := printer.NewManager()
+
 	s := &Server{
 		config:         cfg,
-		printerManager: printer.NewManager(),
+		printerManager: printerMgr,
 		mux:            http.NewServeMux(),
 	}
 
@@ -33,6 +37,11 @@ func NewServer(cfg *config.Config) *Server {
 		case "usb":
 			// TODO: Add USB printer support
 		}
+	}
+
+	// Create WebSocket client if enabled and configured
+	if cfg.Cloud.UseWebSocket && cfg.Cloud.ServerID != "" && cfg.Cloud.APIKey != "" {
+		s.wsClient = cloud.NewWSClient(&cfg.Cloud, printerMgr)
 	}
 
 	s.setupRoutes()
@@ -59,10 +68,26 @@ func (s *Server) setupRoutes() {
 	s.mux.HandleFunc("GET /", s.handleUI)
 }
 
-// Start starts the HTTP server
+// Start starts the HTTP server and WebSocket connection
 func (s *Server) Start() error {
+	// Start WebSocket client if configured
+	if s.wsClient != nil {
+		fmt.Println("Starting WebSocket connection to cloud...")
+		s.wsClient.Start()
+	} else if s.config.Cloud.UseWebSocket {
+		fmt.Println("WebSocket enabled but server_id/api_key not configured")
+		fmt.Println("Register this server to enable cloud printing")
+	}
+
 	addr := fmt.Sprintf("%s:%d", s.config.Server.Host, s.config.Server.Port)
 	return http.ListenAndServe(addr, s.mux)
+}
+
+// Stop gracefully stops the server
+func (s *Server) Stop() {
+	if s.wsClient != nil {
+		s.wsClient.Stop()
+	}
 }
 
 // handleHealth handles the health check endpoint
@@ -162,9 +187,27 @@ func (s *Server) handlePrint(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
+	cloudConnected := false
+	wsStatus := map[string]interface{}{
+		"enabled":      s.config.Cloud.UseWebSocket,
+		"connected":    false,
+		"reconnecting": false,
+	}
+
+	if s.wsClient != nil {
+		status := s.wsClient.Status()
+		cloudConnected = status.Connected
+		wsStatus["connected"] = status.Connected
+		wsStatus["reconnecting"] = status.Reconnecting
+		if status.LastError != "" {
+			wsStatus["last_error"] = status.LastError
+		}
+	}
+
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"status":          "running",
-		"cloud_connected": false, // TODO: Implement cloud connection check
+		"cloud_connected": cloudConnected,
+		"websocket":       wsStatus,
 		"printers_count":  len(s.config.Printers),
 	})
 }
@@ -286,8 +329,8 @@ const webUI = `<!DOCTYPE html>
                 <span class="status-value status-online" id="server-status">Running</span>
             </div>
             <div class="status-row">
-                <span class="status-label">Cloud Connection</span>
-                <span class="status-value status-offline" id="cloud-status">Not Connected</span>
+                <span class="status-label">WebSocket</span>
+                <span class="status-value status-offline" id="ws-status">Not Connected</span>
             </div>
             <div class="status-row">
                 <span class="status-label">Printers</span>
@@ -330,8 +373,23 @@ const webUI = `<!DOCTYPE html>
                 const res = await fetch('/api/status');
                 const data = await res.json();
                 document.getElementById('printer-count').textContent = data.printers_count + ' configured';
-                document.getElementById('cloud-status').textContent = data.cloud_connected ? 'Connected' : 'Not Connected';
-                document.getElementById('cloud-status').className = 'status-value ' + (data.cloud_connected ? 'status-online' : 'status-offline');
+
+                // WebSocket status
+                const wsEl = document.getElementById('ws-status');
+                const ws = data.websocket || {};
+                if (!ws.enabled) {
+                    wsEl.textContent = 'Disabled';
+                    wsEl.className = 'status-value';
+                } else if (ws.connected) {
+                    wsEl.textContent = 'Connected';
+                    wsEl.className = 'status-value status-online';
+                } else if (ws.reconnecting) {
+                    wsEl.textContent = 'Reconnecting...';
+                    wsEl.className = 'status-value';
+                } else {
+                    wsEl.textContent = 'Not Connected';
+                    wsEl.className = 'status-value status-offline';
+                }
             } catch (err) {
                 log('Error fetching status: ' + err.message);
             }
