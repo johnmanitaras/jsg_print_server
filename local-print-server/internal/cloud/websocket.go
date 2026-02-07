@@ -151,10 +151,13 @@ func (c *WSClient) connect() error {
 		wsURL = strings.Replace(wsURL, "{server_id}", c.config.ServerID, 1)
 	}
 
-	// Add API key to headers
+	// Add API key and tenant to headers
 	header := http.Header{}
 	if c.config.APIKey != "" {
-		header.Set("Authorization", "Bearer "+c.config.APIKey)
+		header.Set("X-API-Key", c.config.APIKey)
+	}
+	if c.config.Tenant != "" {
+		header.Set("X-DB-Name", c.config.Tenant)
 	}
 
 	log.Printf("Connecting to WebSocket: %s", wsURL)

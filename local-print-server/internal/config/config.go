@@ -9,9 +9,12 @@ import (
 
 // Config represents the application configuration
 type Config struct {
-	Server   ServerConfig   `yaml:"server"`
-	Cloud    CloudConfig    `yaml:"cloud"`
+	Server   ServerConfig    `yaml:"server"`
+	Cloud    CloudConfig     `yaml:"cloud"`
 	Printers []PrinterConfig `yaml:"printers"`
+
+	// ConfigPath is the path to the config file (not serialized)
+	ConfigPath string `yaml:"-"`
 }
 
 // ServerConfig represents the local server configuration
@@ -25,25 +28,31 @@ type CloudConfig struct {
 	Endpoint     string        `yaml:"endpoint"`
 	ServerID     string        `yaml:"server_id"`
 	APIKey       string        `yaml:"api_key"`
+	Tenant       string        `yaml:"tenant"`
 	PollInterval time.Duration `yaml:"poll_interval"`
 
+	// Server identity
+	ServerName string `yaml:"server_name,omitempty"`
+	Location   string `yaml:"location,omitempty"`
+
 	// WebSocket settings
-	UseWebSocket      bool          `yaml:"use_websocket"`
-	WSEndpoint        string        `yaml:"ws_endpoint"`
-	WSReconnectDelay  time.Duration `yaml:"ws_reconnect_delay"`
-	WSMaxReconnect    time.Duration `yaml:"ws_max_reconnect_delay"`
-	WSPingInterval    time.Duration `yaml:"ws_ping_interval"`
+	UseWebSocket     bool          `yaml:"use_websocket"`
+	WSEndpoint       string        `yaml:"ws_endpoint"`
+	WSReconnectDelay time.Duration `yaml:"ws_reconnect_delay"`
+	WSMaxReconnect   time.Duration `yaml:"ws_max_reconnect_delay"`
+	WSPingInterval   time.Duration `yaml:"ws_ping_interval"`
 }
 
 // PrinterConfig represents a printer configuration
 type PrinterConfig struct {
-	ID        string `yaml:"id"`
-	Name      string `yaml:"name"`
-	Type      string `yaml:"type"` // "usb" or "network"
-	VendorID  string `yaml:"vendor_id,omitempty"`
-	ProductID string `yaml:"product_id,omitempty"`
-	Address   string `yaml:"address,omitempty"`
-	Port      int    `yaml:"port,omitempty"`
+	ID         string `yaml:"id"`
+	Name       string `yaml:"name"`
+	Type       string `yaml:"type"` // "usb" or "network"
+	VendorID   string `yaml:"vendor_id,omitempty"`
+	ProductID  string `yaml:"product_id,omitempty"`
+	Address    string `yaml:"address,omitempty"`
+	Port       int    `yaml:"port,omitempty"`
+	PaperWidth int    `yaml:"paper_width,omitempty"` // 58 or 80 (mm)
 }
 
 // Default returns the default configuration
@@ -56,11 +65,11 @@ func Default() *Config {
 		Cloud: CloudConfig{
 			Endpoint:          "https://api.jetsetgo.world/api/v1/print",
 			WSEndpoint:        "wss://api.jetsetgo.world/api/v1/print/ws",
-			UseWebSocket:      true,
+			UseWebSocket:      false, // WS not yet supported by cloud; use polling
 			WSReconnectDelay:  1 * time.Second,
 			WSMaxReconnect:    30 * time.Second,
 			WSPingInterval:    30 * time.Second,
-			PollInterval:      30 * time.Second, // Fallback polling interval
+			PollInterval:      5 * time.Second,
 		},
 		Printers: []PrinterConfig{},
 	}
@@ -77,10 +86,12 @@ func Load() (*Config, error) {
 
 	var data []byte
 	var err error
+	var loadedPath string
 
 	for _, path := range configPaths {
 		data, err = os.ReadFile(path)
 		if err == nil {
+			loadedPath = path
 			break
 		}
 	}
@@ -94,6 +105,7 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 
+	cfg.ConfigPath = loadedPath
 	return cfg, nil
 }
 

@@ -53,6 +53,26 @@ func (m *Manager) GetPrinter(id string) (Printer, error) {
 	return p, nil
 }
 
+// RemovePrinter removes a printer from the manager
+func (m *Manager) RemovePrinter(id string) error {
+	p, ok := m.printers[id]
+	if !ok {
+		return errors.New("printer not found: " + id)
+	}
+	p.Close()
+	delete(m.printers, id)
+	return nil
+}
+
+// ListPrinters returns all printer IDs
+func (m *Manager) ListPrinters() []string {
+	ids := make([]string, 0, len(m.printers))
+	for id := range m.printers {
+		ids = append(ids, id)
+	}
+	return ids
+}
+
 // Print sends data to a printer
 func (m *Manager) Print(printerID string, data []byte) error {
 	p, err := m.GetPrinter(printerID)
