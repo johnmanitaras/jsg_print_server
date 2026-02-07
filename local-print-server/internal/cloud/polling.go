@@ -109,7 +109,6 @@ type pollJob struct {
 	JobID     string `json:"job_id"`
 	PrinterID string `json:"printer_id"`
 	Data      string `json:"data"`
-	Status    string `json:"status"`
 }
 
 type pollJobResponse struct {
@@ -157,7 +156,8 @@ func (p *PollClient) poll() {
 	}
 
 	for _, job := range result.Jobs {
-		if job.Status != "pending" {
+		if job.Data == "" {
+			log.Printf("Skipping job %s: no data", job.JobID)
 			continue
 		}
 		go p.processJob(job.JobID, job.PrinterID, job.Data)

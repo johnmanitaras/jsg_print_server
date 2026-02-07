@@ -64,8 +64,8 @@ func Default() *Config {
 		},
 		Cloud: CloudConfig{
 			Endpoint:          "https://api.jetsetgo.world/api/v1/print",
-			WSEndpoint:        "wss://api.jetsetgo.world/api/v1/print/ws",
-			UseWebSocket:      false, // WS not yet supported by cloud; use polling
+			WSEndpoint:        "wss://api.jetsetgo.world/api/v1/print/servers/{server_id}/ws",
+			UseWebSocket:      false, // Default to polling; WS requires reverse proxy config
 			WSReconnectDelay:  1 * time.Second,
 			WSMaxReconnect:    30 * time.Second,
 			WSPingInterval:    30 * time.Second,

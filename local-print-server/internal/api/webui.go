@@ -339,7 +339,7 @@ a:hover{text-decoration:underline}
      <label>Connection Method</label>
      <select id="set-use-ws" onchange="toggleWsSettings()">
       <option value="false">HTTP Polling (Recommended)</option>
-      <option value="true">WebSocket (Not yet supported)</option>
+      <option value="true">WebSocket (auto-fallback to polling)</option>
      </select>
     </div>
     <div id="set-poll-group" class="form-group" style="display:none">

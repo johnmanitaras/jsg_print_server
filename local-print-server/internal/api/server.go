@@ -54,10 +54,10 @@ func NewServer(cfg *config.Config, logBuf *LogBuffer, jobBuf *JobBuffer) *Server
 	if cfg.Cloud.ServerID != "" && cfg.Cloud.APIKey != "" {
 		if cfg.Cloud.UseWebSocket {
 			s.wsClient = cloud.NewWSClient(&cfg.Cloud, printerMgr)
+			s.configureWSClient(s.wsClient)
 		} else {
 			s.pollClient = cloud.NewPollClient(&cfg.Cloud, printerMgr)
-			s.pollClient.PrinterStatuses = s.getPrinterStatuses
-			s.pollClient.PrinterList = s.getPrinterList
+			s.configurePollClient(s.pollClient)
 		}
 	}
 
@@ -275,12 +275,12 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	s.stopCloudClients()
 	if s.config.Cloud.UseWebSocket {
 		s.wsClient = cloud.NewWSClient(&s.config.Cloud, s.printerManager)
+		s.configureWSClient(s.wsClient)
 		s.wsClient.Start()
 		s.logBuffer.LogInfo("WebSocket client started after registration")
 	} else {
 		s.pollClient = cloud.NewPollClient(&s.config.Cloud, s.printerManager)
-		s.pollClient.PrinterStatuses = s.getPrinterStatuses
-			s.pollClient.PrinterList = s.getPrinterList
+		s.configurePollClient(s.pollClient)
 		s.pollClient.Start()
 		s.logBuffer.LogInfo("Polling client started after registration")
 	}
@@ -469,12 +469,12 @@ func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		if hasCredentials {
 			if useWs {
 				s.wsClient = cloud.NewWSClient(&s.config.Cloud, s.printerManager)
+				s.configureWSClient(s.wsClient)
 				s.wsClient.Start()
 				s.logBuffer.LogInfo("WebSocket client started")
 			} else {
 				s.pollClient = cloud.NewPollClient(&s.config.Cloud, s.printerManager)
-				s.pollClient.PrinterStatuses = s.getPrinterStatuses
-			s.pollClient.PrinterList = s.getPrinterList
+				s.configurePollClient(s.pollClient)
 				s.pollClient.Start()
 				s.logBuffer.LogInfo("Polling client started (interval: %s)", s.config.Cloud.PollInterval)
 			}
@@ -559,9 +559,7 @@ func (s *Server) handleAddPrinter(w http.ResponseWriter, r *http.Request) {
 	s.configMu.Unlock()
 
 	s.logBuffer.LogInfo("Printer added: %s (%s)", p.Name, p.ID)
-	if s.pollClient != nil {
-		s.pollClient.SyncPrinters()
-	}
+	s.syncPrintersToCloud()
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"success": true,
 		"printer": map[string]interface{}{
@@ -627,9 +625,7 @@ func (s *Server) handleUpdatePrinter(w http.ResponseWriter, r *http.Request) {
 	s.configMu.Unlock()
 
 	s.logBuffer.LogInfo("Printer updated: %s", printerID)
-	if s.pollClient != nil {
-		s.pollClient.SyncPrinters()
-	}
+	s.syncPrintersToCloud()
 	json.NewEncoder(w).Encode(map[string]interface{}{"success": true})
 }
 
@@ -660,9 +656,7 @@ func (s *Server) handleDeletePrinter(w http.ResponseWriter, r *http.Request) {
 	s.configMu.Unlock()
 
 	s.logBuffer.LogInfo("Printer removed: %s", printerID)
-	if s.pollClient != nil {
-		s.pollClient.SyncPrinters()
-	}
+	s.syncPrintersToCloud()
 	json.NewEncoder(w).Encode(map[string]interface{}{"success": true})
 }
 
@@ -855,6 +849,89 @@ func (s *Server) getPrinterStatuses() map[string]string {
 		statuses[p.ID] = status
 	}
 	return statuses
+}
+
+// configurePollClient sets up all callbacks on a PollClient instance
+func (s *Server) configurePollClient(pc *cloud.PollClient) {
+	pc.PrinterStatuses = s.getPrinterStatuses
+	pc.PrinterList = s.getPrinterList
+	pc.OnJobReceived = func(jobID, printerID string, dataSize int) {
+		printerName := ""
+		s.configMu.RLock()
+		for _, p := range s.config.Printers {
+			if p.ID == printerID {
+				printerName = p.Name
+				break
+			}
+		}
+		s.configMu.RUnlock()
+
+		s.jobBuffer.Add(JobRecord{
+			ID:          jobID,
+			PrinterID:   printerID,
+			PrinterName: printerName,
+			Status:      "printing",
+			DataSize:    dataSize,
+			CreatedAt:   time.Now(),
+		})
+	}
+	pc.OnJobCompleted = func(jobID, status, errMsg string) {
+		s.jobBuffer.UpdateStatus(jobID, status, errMsg)
+	}
+}
+
+// configureWSClient sets up all callbacks on a WSClient instance
+func (s *Server) configureWSClient(ws *cloud.WSClient) {
+	ws.PrinterList = s.getPrinterList
+	ws.OnJobReceived = func(jobID, printerID string, dataSize int) {
+		printerName := ""
+		s.configMu.RLock()
+		for _, p := range s.config.Printers {
+			if p.ID == printerID {
+				printerName = p.Name
+				break
+			}
+		}
+		s.configMu.RUnlock()
+
+		s.jobBuffer.Add(JobRecord{
+			ID:          jobID,
+			PrinterID:   printerID,
+			PrinterName: printerName,
+			Status:      "printing",
+			DataSize:    dataSize,
+			CreatedAt:   time.Now(),
+		})
+	}
+	ws.OnJobCompleted = func(jobID, status, errMsg string) {
+		s.jobBuffer.UpdateStatus(jobID, status, errMsg)
+	}
+	ws.OnFallbackToPoll = func() {
+		s.logBuffer.LogInfo("WebSocket unavailable, switching to HTTP polling")
+		go s.handleWSFallback()
+	}
+}
+
+// handleWSFallback switches from WebSocket to polling when WS is unavailable
+func (s *Server) handleWSFallback() {
+	// Clean up WS client reference (its loop already exited)
+	s.wsClient = nil
+
+	// Start polling client as fallback
+	s.pollClient = cloud.NewPollClient(&s.config.Cloud, s.printerManager)
+	s.configurePollClient(s.pollClient)
+	s.pollClient.Start()
+	s.logBuffer.LogInfo("Polling client started as fallback (interval: %s)", s.config.Cloud.PollInterval)
+}
+
+// syncPrintersToCloud triggers a printer sync on whichever cloud client is active
+func (s *Server) syncPrintersToCloud() {
+	if s.pollClient != nil {
+		s.pollClient.SyncPrinters()
+	}
+	if s.wsClient != nil {
+		s.wsClient.SyncPrinters()
+	}
 }
 
 // --- Web UI ---
