@@ -132,8 +132,8 @@ To test registration end-to-end:
 3. Open `http://localhost:8080` - should show the registration wizard
 4. In a separate terminal, generate a registration code via the cloud API:
    ```bash
-   # First get a Firebase token
-   curl -X POST "https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=AIzaSyCCk8B1djMgX8FTmoQt8fCfn3GDimeIxB4" -H "Content-Type: application/json" -d '{"email":"manus@secretagentsocks.com","password":"claude123","returnSecureToken":true}'
+   # First get a Firebase token (use your own credentials)
+   curl -X POST "https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=<FIREBASE_API_KEY>" -H "Content-Type: application/json" -d '{"email":"<YOUR_EMAIL>","password":"<YOUR_PASSWORD>","returnSecureToken":true}'
 
    # Then generate a registration code (use the idToken from above)
    curl -X POST "https://api.jetsetgo.world/api/v1/print/servers/registration-codes" \

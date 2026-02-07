@@ -47,10 +47,6 @@ type WSClient struct {
 
 	// PrinterList returns printer configs for syncing to cloud
 	PrinterList func() []map[string]interface{}
-
-	// OnFallbackToPoll is called when WS determines it cannot connect
-	// and the server should fall back to HTTP polling (e.g. close code 4003)
-	OnFallbackToPoll func()
 }
 
 // IncomingMessage represents messages from the cloud
@@ -191,14 +187,8 @@ func (c *WSClient) connectionLoop() {
 				return
 
 			case CloseWrongWorker:
-				log.Printf("WebSocket routing error (4003): reverse proxy not configured. Falling back to HTTP polling.")
-				c.mu.Lock()
-				c.reconnecting = false
-				c.mu.Unlock()
-				if c.OnFallbackToPoll != nil {
-					c.OnFallbackToPoll()
-				}
-				return
+				delay = 30 * time.Second
+				log.Printf("WebSocket endpoint unavailable (4003/404): %v. Retrying in %v...", err, delay)
 
 			case CloseLimitExceeded:
 				delay = 30 * time.Second
@@ -218,8 +208,8 @@ func (c *WSClient) connectionLoop() {
 			case <-time.After(delay):
 			}
 
-			// Exponential backoff for generic errors
-			if closeCode != CloseReplaced && closeCode != CloseLimitExceeded {
+			// Exponential backoff for generic errors (not for specific codes that set their own delay)
+			if closeCode != CloseReplaced && closeCode != CloseLimitExceeded && closeCode != CloseWrongWorker {
 				delay = delay * 2
 				if delay > c.config.WSMaxReconnect {
 					delay = c.config.WSMaxReconnect
@@ -260,7 +250,6 @@ func (c *WSClient) connectAndRun() (int, error) {
 			case http.StatusUnauthorized, http.StatusForbidden:
 				return CloseAuthFailure, fmt.Errorf("authentication failed (HTTP %d)", resp.StatusCode)
 			case http.StatusNotFound, http.StatusBadGateway, http.StatusServiceUnavailable:
-				// Endpoint doesn't exist or routing not configured - same as 4003
 				return CloseWrongWorker, fmt.Errorf("WebSocket endpoint not available (HTTP %d)", resp.StatusCode)
 			}
 		}

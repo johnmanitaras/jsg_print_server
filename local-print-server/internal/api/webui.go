@@ -273,6 +273,7 @@ a:hover{text-decoration:underline}
 
   <div class="btn-row" style="margin-top:4px">
    <button class="btn btn-secondary btn-sm" id="dash-test-btn" onclick="dashTestPrint()" style="display:none">Test Print</button>
+   <button class="btn btn-secondary btn-sm" onclick="reconnectCloud()">Reconnect</button>
    <button class="btn btn-secondary btn-sm" onclick="refreshDashboard()">Refresh Status</button>
   </div>
  </div>
@@ -339,7 +340,7 @@ a:hover{text-decoration:underline}
      <label>Connection Method</label>
      <select id="set-use-ws" onchange="toggleWsSettings()">
       <option value="false">HTTP Polling (Recommended)</option>
-      <option value="true">WebSocket (auto-fallback to polling)</option>
+      <option value="true">WebSocket</option>
      </select>
     </div>
     <div id="set-poll-group" class="form-group" style="display:none">
@@ -659,6 +660,18 @@ function dashTestPrint() {
   var printers = data.printers || [];
   if (printers.length > 0) testPrint(printers[0].id);
  });
+}
+
+function reconnectCloud() {
+ toast('Reconnecting...', 'info');
+ fetch('/api/reconnect', {method:'POST'}).then(function(r){return r.json()}).then(function(data) {
+  if (data.success) {
+   toast('Cloud client reconnected', 'success');
+   setTimeout(refreshDashboard, 1000);
+  } else {
+   toast(data.error || 'Reconnect failed', 'error');
+  }
+ }).catch(function(){ toast('Network error', 'error'); });
 }
 
 // ============ Header Status ============

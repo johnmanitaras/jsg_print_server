@@ -95,6 +95,9 @@ func (s *Server) setupRoutes() {
 	// Status
 	s.mux.HandleFunc("GET /api/status", s.handleStatus)
 
+	// Reconnect cloud client
+	s.mux.HandleFunc("POST /api/reconnect", s.handleReconnect)
+
 	// Web UI
 	s.mux.HandleFunc("GET /", s.handleUI)
 }
@@ -137,6 +140,40 @@ func (s *Server) stopCloudClients() {
 		s.pollClient.Stop()
 		s.pollClient = nil
 	}
+}
+
+// reconnectCloudClient stops any running cloud client and starts a fresh one from current config
+func (s *Server) reconnectCloudClient() {
+	s.stopCloudClients()
+
+	s.configMu.RLock()
+	hasCredentials := s.config.Cloud.ServerID != "" && s.config.Cloud.APIKey != ""
+	useWs := s.config.Cloud.UseWebSocket
+	s.configMu.RUnlock()
+
+	if !hasCredentials {
+		s.logBuffer.LogInfo("No cloud credentials. Skipping reconnect.")
+		return
+	}
+
+	if useWs {
+		s.wsClient = cloud.NewWSClient(&s.config.Cloud, s.printerManager)
+		s.configureWSClient(s.wsClient)
+		s.wsClient.Start()
+		s.logBuffer.LogInfo("WebSocket client reconnected")
+	} else {
+		s.pollClient = cloud.NewPollClient(&s.config.Cloud, s.printerManager)
+		s.configurePollClient(s.pollClient)
+		s.pollClient.Start()
+		s.logBuffer.LogInfo("Polling client reconnected (interval: %s)", s.config.Cloud.PollInterval)
+	}
+}
+
+// handleReconnect restarts the cloud connection with current config
+func (s *Server) handleReconnect(w http.ResponseWriter, r *http.Request) {
+	s.logBuffer.LogInfo("Reconnect requested via API")
+	s.reconnectCloudClient()
+	json.NewEncoder(w).Encode(map[string]interface{}{"success": true})
 }
 
 // Stop gracefully stops the server
@@ -272,18 +309,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	s.configMu.Unlock()
 
 	// Start cloud client now that we're registered
-	s.stopCloudClients()
-	if s.config.Cloud.UseWebSocket {
-		s.wsClient = cloud.NewWSClient(&s.config.Cloud, s.printerManager)
-		s.configureWSClient(s.wsClient)
-		s.wsClient.Start()
-		s.logBuffer.LogInfo("WebSocket client started after registration")
-	} else {
-		s.pollClient = cloud.NewPollClient(&s.config.Cloud, s.printerManager)
-		s.configurePollClient(s.pollClient)
-		s.pollClient.Start()
-		s.logBuffer.LogInfo("Polling client started after registration")
-	}
+	s.reconnectCloudClient()
 
 	s.logBuffer.LogInfo("Registration successful! Server ID: %s", cloudResp.ServerID)
 
@@ -380,14 +406,8 @@ func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	wsChanged := false
-	credentialsChanged := false
-
 	if cloudCfg, ok := body["cloud"].(map[string]interface{}); ok {
 		if v, ok := cloudCfg["use_websocket"].(bool); ok {
-			if v != s.config.Cloud.UseWebSocket {
-				wsChanged = true
-			}
 			s.config.Cloud.UseWebSocket = v
 		}
 		if v, ok := cloudCfg["server_name"].(string); ok {
@@ -396,15 +416,10 @@ func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		if v, ok := cloudCfg["location"].(string); ok {
 			s.config.Cloud.Location = v
 		}
-		// Allow editing credentials directly
 		if v, ok := cloudCfg["server_id"].(string); ok {
-			if v != s.config.Cloud.ServerID {
-				credentialsChanged = true
-			}
 			s.config.Cloud.ServerID = v
 		}
 		if v, ok := cloudCfg["api_key"].(string); ok && v != "" {
-			credentialsChanged = true
 			s.config.Cloud.APIKey = v
 		}
 		if v, ok := cloudCfg["tenant"].(string); ok {
@@ -412,7 +427,6 @@ func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		}
 		if v, ok := cloudCfg["ws_endpoint"].(string); ok && v != "" {
 			s.config.Cloud.WSEndpoint = v
-			wsChanged = true
 		}
 		if v, ok := cloudCfg["poll_interval"].(string); ok {
 			if d, err := time.ParseDuration(v); err == nil {
@@ -443,7 +457,6 @@ func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		s.config.Cloud.Tenant = ""
 		s.config.Cloud.ServerName = ""
 		s.config.Cloud.Location = ""
-		credentialsChanged = true
 	}
 
 	// Save config
@@ -456,30 +469,10 @@ func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Manage cloud client lifecycle at runtime
-	needsRestart := wsChanged || credentialsChanged
-	hasCredentials := s.config.Cloud.ServerID != "" && s.config.Cloud.APIKey != ""
-	useWs := s.config.Cloud.UseWebSocket
 	s.configMu.Unlock()
 
-	if needsRestart {
-		s.stopCloudClients()
-		s.logBuffer.LogInfo("Cloud client stopped")
-
-		if hasCredentials {
-			if useWs {
-				s.wsClient = cloud.NewWSClient(&s.config.Cloud, s.printerManager)
-				s.configureWSClient(s.wsClient)
-				s.wsClient.Start()
-				s.logBuffer.LogInfo("WebSocket client started")
-			} else {
-				s.pollClient = cloud.NewPollClient(&s.config.Cloud, s.printerManager)
-				s.configurePollClient(s.pollClient)
-				s.pollClient.Start()
-				s.logBuffer.LogInfo("Polling client started (interval: %s)", s.config.Cloud.PollInterval)
-			}
-		}
-	}
+	// Always reconnect cloud client so settings take effect immediately
+	s.reconnectCloudClient()
 
 	s.logBuffer.LogInfo("Configuration updated")
 	json.NewEncoder(w).Encode(map[string]interface{}{
@@ -906,22 +899,6 @@ func (s *Server) configureWSClient(ws *cloud.WSClient) {
 	ws.OnJobCompleted = func(jobID, status, errMsg string) {
 		s.jobBuffer.UpdateStatus(jobID, status, errMsg)
 	}
-	ws.OnFallbackToPoll = func() {
-		s.logBuffer.LogInfo("WebSocket unavailable, switching to HTTP polling")
-		go s.handleWSFallback()
-	}
-}
-
-// handleWSFallback switches from WebSocket to polling when WS is unavailable
-func (s *Server) handleWSFallback() {
-	// Clean up WS client reference (its loop already exited)
-	s.wsClient = nil
-
-	// Start polling client as fallback
-	s.pollClient = cloud.NewPollClient(&s.config.Cloud, s.printerManager)
-	s.configurePollClient(s.pollClient)
-	s.pollClient.Start()
-	s.logBuffer.LogInfo("Polling client started as fallback (interval: %s)", s.config.Cloud.PollInterval)
 }
 
 // syncPrintersToCloud triggers a printer sync on whichever cloud client is active
